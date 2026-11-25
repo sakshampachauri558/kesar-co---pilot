@@ -3,14 +3,13 @@
 **Prepared by:** Saksham Pachauri  
 **GitHub Repository:** [https://github.com/sakshampachauri558/kesar-co---pilot](https://github.com/sakshampachauri558/kesar-co---pilot)  
 **Live Google Sheet:** [Kesar Support Google Sheet](https://docs.google.com/spreadsheets/d/1dNM176hfNtVme6NZ-Yh7Ctni7wPnjRAEj1ajw87qdao/edit?gid=0#gid=0)  
-**5-Minute Demo Video:** [Video Walkthrough (Google Drive)](https://drive.google.com/file/d/1L9jCa_LVHd3_lzKtCkJ1Vp6hDct17-Le/view?usp=sharing)  
-
+**5-Minute Demo Video: https://drive.google.com/file/d/1kiAw_VA1KZnGuVk6InPDhP01vR0Wtl2N/view
 ## 1. Summary
 
 - **What Saksham built:** An automated, production-ready Support Copilot for the D2C Ayurvedic skincare brand "Kesar & Co." It receives support emails through a webhook, produces structured classifications, performs privacy-safe order lookups, applies deterministic return and damage policies, drafts responses in the brand voice, prevents duplicate tickets, and records the complete workflow in Google Sheets.
 - **Platform and LLM used:** n8n Cloud (with exported blueprint), Google Gemini 1.5 Flash (via Google AI Studio, temperature 0.0 for deterministic classification, 0.2 for drafting), JavaScript deterministic logic nodes.
 - **Live Google Sheet Link:** [Kesar Support Google Sheet](https://docs.google.com/spreadsheets/d/1dNM176hfNtVme6NZ-Yh7Ctni7wPnjRAEj1ajw87qdao/edit?gid=0#gid=0) (View access enabled)
-- **Demo Video Recording:** [Google Drive Video Link](https://drive.google.com/file/d/1L9jCa_LVHd3_lzKtCkJ1Vp6hDct17-Le/view?usp=sharing)
+- **Demo Video Recording:** [Google Drive Video Link]: https://drive.google.com/file/d/1kiAw_VA1KZnGuVk6InPDhP01vR0Wtl2N/view
 - **Time spent:** Approximately 5.5 hours across architecture design, prompt hardening, edge-case testing, and documentation.
 - **What works:** 100% schema-valid JSON extraction, zero-hallucination policy grounding in `faq.md`, automated prompt injection neutralization (email `E12`), customer email privacy protection (email `E07`), smart ticket deduplication (email `E04` & `E21`), Hinglish/Hindi recognition, deterministic return window validation, and an automated 6-point CI/CD safety eval suite (`scripts/run_evals.py`).
 - **What doesn't:** Unidentified vague emails with zero metadata (`E18`) cannot be automatically matched to customer records and are escalated to human review.
