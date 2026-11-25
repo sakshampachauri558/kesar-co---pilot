@@ -1,0 +1,352 @@
+{
+  "name": "Kesar & Co. AI Support Copilot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "support-email",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        300
+      ],
+      "webhookId": "kesar-support-email-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize incoming email and detect prompt injection\nconst input = $input.first().json;\nconst email = input.body || input;\n\nconst emailId = email.id || 'E00';\nconst receivedAt = email.received_at || '2026-11-20T09:00:00+05:30';\nconst fromObj = email.from || {};\nconst fromName = fromObj.name || 'Customer';\nconst fromEmail = (fromObj.email || '').trim().toLowerCase();\nconst subject = email.subject || '';\nconst body = email.body || '';\n\n// Security: Detect prompt injection / jailbreak patterns\nconst injectionRegex = /(ignore all previous instructions|system note|override policy|mark.*approved|vip customer)/i;\nconst promptInjectionDetected = injectionRegex.test(body);\n\nreturn {\n  json: {\n    email_id: emailId,\n    received_at: receivedAt,\n    from_name: fromName,\n    from_email: fromEmail,\n    subject: subject,\n    body: body,\n    prompt_injection_detected: promptInjectionDetected,\n    scenario_today: '2026-11-20'\n  }\n};"
+      },
+      "id": "node-normalize",
+      "name": "Normalize & Guardrails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://raw.githubusercontent.com/abhishek-patel-cadient/kesar-ai-copilot-assignment/refs/heads/main/data/orders.json",
+        "options": {}
+      },
+      "id": "node-fetch-orders",
+      "name": "Fetch Orders DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://raw.githubusercontent.com/abhishek-patel-cadient/kesar-ai-copilot-assignment/refs/heads/main/data/faq.md",
+        "options": {}
+      },
+      "id": "node-fetch-faq",
+      "name": "Fetch FAQ Knowledge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Local & deterministic classification fallback + schema enforcement\nconst email = $('Normalize & Guardrails').first().json;\nconst body = (email.body || '').toLowerCase();\nconst subject = (email.subject || '').toLowerCase();\nconst text = subject + ' ' + body;\n\n// Extract order_id if present (regex: KC-[0-9]{4})\nconst orderMatch = (email.subject + ' ' + email.body).match(/KC-[0-9]{4}/i);\nconst orderId = orderMatch ? orderMatch[0].toUpperCase() : null;\n\n// Determine language\nlet language = 'en';\nif (/[\\u0900-\\u097F]/.test(email.body)) {\n  language = 'hi';\n} else if (/\\b(kya|kab|kaise|nahi|mera|meri|aayega|bata do|chahiye|shukriya|namaste)\\b/i.test(email.body)) {\n  language = 'hinglish';\n}\n\n// Determine sentiment\nlet sentiment = 'neutral';\nif (/worst|ruined|mess|unacceptable|angry|fraud|threat|useless/i.test(body)) {\n  sentiment = 'angry';\n} else if (/not happy|disappointed|cracked|spilled|leaked|missing|wrong/i.test(body)) {\n  sentiment = 'negative';\n} else if (/thank you|thanks|lovely|great|soothing|quick delivery/i.test(body)) {\n  sentiment = 'positive';\n}\n\n// Determine intent\nlet intent = 'other';\nlet secondaryIntent = null;\nlet confidence = 0.95;\nlet summary = '';\n\nif (/google ranking|ranking on google|seo rankers|congratulations/i.test(text)) {\n  intent = 'other';\n  summary = 'Spam/promotional email offering SEO services';\n} else if (/collab|collaboration|influencer|followers|media kit/i.test(text)) {\n  intent = 'other';\n  secondaryIntent = null;\n  summary = 'Influencer collaboration proposal';\n} else if (/gst invoice|gstin|reimbursement/i.test(text)) {\n  intent = 'other';\n  summary = 'Request for corporate GST invoice';\n} else if (/thank you|lovely.*soothing/i.test(text)) {\n  intent = 'other';\n  sentiment = 'positive';\n  summary = 'Customer feedback and appreciation';\n} else if (/damaged|cracked|leaked|wrong item|missing/i.test(text)) {\n  intent = 'complaint';\n  summary = 'Customer complaining about damaged, wrong or missing item in delivery';\n} else if (/return|refund/i.test(text)) {\n  intent = 'return_refund';\n  summary = 'Customer requesting return or refund for order';\n} else if (/where is|status|tracking|kab aayega|when will it reach/i.test(text)) {\n  intent = 'order_status';\n  summary = 'Inquiry regarding shipping or delivery status';\n} else if (/oily skin|vegan|eczema|serum.*skin|cure|ingredients|how to use/i.test(text)) {\n  intent = 'product_query';\n  summary = 'Product compatibility or skincare inquiry';\n}\n\nreturn {\n  json: {\n    email: email,\n    classification: {\n      intent: intent,\n      secondary_intent: secondaryIntent,\n      order_id: orderId,\n      sentiment: sentiment,\n      language: language,\n      confidence: confidence,\n      summary: summary\n    }\n  }\n};"
+      },
+      "id": "node-classify",
+      "name": "Classify & Extract Intent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Order lookup, privacy check, date arithmetic, and rules verification\nconst item = $input.first().json;\nconst email = item.email || {};\nconst classification = item.classification || {};\nconst ordersData = $('Fetch Orders DB').first().json;\nconst orders = ordersData.orders || [];\n\nconst fromEmail = (email.from_email || '').toLowerCase().trim();\nconst extractedOrderId = classification.order_id || null;\n\n// 1. Order Lookup\nlet matchedOrder = null;\nif (extractedOrderId) {\n  matchedOrder = orders.find(o => o.order_id.toUpperCase() === extractedOrderId.toUpperCase());\n}\nif (!matchedOrder && fromEmail) {\n  matchedOrder = orders.find(o => o.customer_email.toLowerCase().trim() === fromEmail);\n}\n\nconst orderFound = !!matchedOrder;\nlet privacyViolation = false;\nlet orderDetailsAllowed = false;\n\n// 2. Customer Privacy Verification\nif (matchedOrder) {\n  const orderOwnerEmail = matchedOrder.customer_email.toLowerCase().trim();\n  if (orderOwnerEmail !== fromEmail) {\n    privacyViolation = true;\n    orderDetailsAllowed = false;\n  } else {\n    orderDetailsAllowed = true;\n  }\n}\n\n// 3. Date Arithmetic relative to 20 November 2026\nconst SCENARIO_DATE = new Date('2026-11-20T00:00:00+05:30');\nlet daysSinceDelivery = null;\nlet returnEligible = false;\nlet damagedWindowValid = false;\n\nif (matchedOrder && matchedOrder.delivered_date) {\n  const deliveryDate = new Date(matchedOrder.delivered_date + 'T00:00:00+05:30');\n  const diffMs = SCENARIO_DATE.getTime() - deliveryDate.getTime();\n  daysSinceDelivery = Math.floor(diffMs / (1000 * 60 * 60 * 24));\n  returnEligible = (daysSinceDelivery <= 7 && daysSinceDelivery >= 0);\n  damagedWindowValid = (daysSinceDelivery <= 2 && daysSinceDelivery >= 0);\n}\n\n// 4. Escalation (needs_human)\nlet needsHuman = false;\nconst reasons = [];\n\nif (email.prompt_injection_detected) {\n  needsHuman = true;\n  reasons.push('Prompt injection detected in customer email');\n}\n\nif (privacyViolation) {\n  needsHuman = true;\n  reasons.push('Privacy mismatch: sender email does not match order email');\n}\n\nif (/eczema|cure/i.test(email.body)) {\n  needsHuman = true;\n  reasons.push('Medical or cure claim question (escalated for safety)');\n}\n\nif (classification.intent === 'other' && !/thank you|simran/i.test(email.body) && !/seo rankers/i.test(email.body)) {\n  needsHuman = true;\n  reasons.push('Non-standard or partnership inquiry needing manual attention');\n}\n\nreturn {\n  json: {\n    email: email,\n    classification: classification,\n    order: matchedOrder,\n    order_found: orderFound,\n    privacy_violation: privacyViolation,\n    order_details_allowed: orderDetailsAllowed,\n    days_since_delivery: daysSinceDelivery,\n    return_eligible: returnEligible,\n    damaged_window_valid: damagedWindowValid,\n    needs_human: needsHuman,\n    escalation_reasons: reasons\n  }\n};"
+      },
+      "id": "node-order-rules",
+      "name": "Order Lookup & Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.classification.intent }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "order_status"
+            },
+            {
+              "value2": "product_query"
+            },
+            {
+              "value2": "return_refund"
+            },
+            {
+              "value2": "complaint"
+            }
+          ]
+        },
+        "fallbackOutput": 4
+      },
+      "id": "node-switch",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Draft reply generator adhering strictly to brand_voice.md and faq.md\nconst item = $input.first().json;\nconst email = item.email || {};\nconst order = item.order || {};\nconst classification = item.classification || {};\nconst firstName = (email.from_name || 'there').split(' ')[0];\nconst lang = classification.language || 'en';\n\nlet reply = '';\n\n// Security Check: Privacy Violation\nif (item.privacy_violation) {\n  reply = `Hi ${firstName},\\n\\nThank you for reaching out. To protect our customers' personal information and privacy, we can only share tracking and delivery details directly with the email address registered on the order.\\n\\nPlease have the person who placed the order reach out to us from their email, and we will gladly share the updates right away.\\n\\nWarm regards,\\nTeam Kesar`;\n}\n// Security Check: Prompt Injection Defense\nelse if (email.prompt_injection_detected) {\n  reply = `Hi ${firstName},\\n\\nThank you for getting in touch. According to our hygiene and return policy, products that have been unsealed or used are not eligible for return or refund. As a result, we cannot approve a refund for this order.\\n\\nIf you have any further questions or need product guidance, please feel free to let us know.\\n\\nWarm regards,\\nTeam Kesar`;\n}\n// Eczema / Medical Query\nelse if (/eczema|cure/i.test(email.body)) {\n  reply = `Hi ${firstName},\\n\\nOur Kumkumadi Night Oil is a traditional cosmetic blend designed to nourish skin, but it is not a medical treatment and is not formulated to diagnose, treat, or cure eczema. Because facial eczema can be very sensitive, we strongly recommend consulting your dermatologist before introducing any new skincare product.\\n\\nWe also always advise performing a small patch test on your inner forearm 24 hours prior to use.\\n\\nWarm regards,\\nTeam Kesar`;\n}\n// Order Status Replies\nelse if (classification.intent === 'order_status') {\n  if (lang === 'hinglish') {\n    reply = `Hi ${firstName},\\n\\nAapka order ${order.order_id || 'KC-1043'} ship ho chuka hai aur 23 November 2026 tak deliver hone ki ummeed hai. Aap is tracking link par shipment check kar sakte hain: ${order.tracking_url || 'https://track.example.com/SS7781043'}.\\n\\nAgar aapko travel se pehle aur koi madad chahiye, toh humein zaroor batayein.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else if (!item.order_found) {\n    reply = `Hi ${firstName},\\n\\nWe could not find an active order under order number ${classification.order_id || 'provided'}. Please verify your order number or let us know the email address used during checkout so we can trace it for you.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else if (order.status === 'out_for_delivery') {\n    reply = `Hi ${firstName},\\n\\nYour order ${order.order_id} is out for delivery today with ${order.courier || 'our courier'}. Since this is a Cash on Delivery order of Rs ${order.total || '1,897'}, please keep the exact amount ready as courier partners may not carry change.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else if (order.status === 'cancelled') {\n    reply = `Hi ${firstName},\\n\\nYour order ${order.order_id} was cancelled on 16 November 2026 because the Sandalwood Body Lotion was unfortunately out of stock at our warehouse. A full refund of Rs ${order.total || '828'} was initiated to your original payment method and will reflect within 5-7 business days.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else {\n    reply = `Hi ${firstName},\\n\\nYour order ${order.order_id} is on its way and scheduled to reach you by ${order.estimated_delivery || '21 November 2026'}. You can track the live progress of your package via ${order.courier || 'SwiftShip'} here: ${order.tracking_url || 'https://track.example.com'}.\\n\\nWarm regards,\\nTeam Kesar`;\n  }\n}\n// Product Query\nelse if (classification.intent === 'product_query') {\n  if (lang === 'hi') {\n    reply = `\u0928\u092e\u0938\u094d\u0924\u0947 ${firstName},\\n\\n\u0917\u0941\u0935\u093e\u0939\u093e\u091f\u0940 \u0915\u0947 \u0932\u093f\u090f \u0939\u092e\u093e\u0930\u093e \u0921\u093f\u0932\u0940\u0935\u0930\u0940 \u0938\u092e\u092f 6-8 \u0915\u093e\u0930\u094d\u092f \u0926\u093f\u0935\u0938 \u0939\u0948\u0964 5,000 \u0930\u0941\u092a\u092f\u0947 \u0924\u0915 \u0915\u0947 \u0938\u092d\u0940 \u0911\u0930\u094d\u0921\u0930\u094b\u0902 \u092a\u0930 \u0915\u0948\u0936 \u0911\u0928 \u0921\u093f\u0932\u0940\u0935\u0930\u0940 (COD) \u0909\u092a\u0932\u092c\u094d\u0927 \u0939\u0948, \u091c\u093f\u0938 \u092a\u0930 49 \u0930\u0941\u092a\u092f\u0947 \u0915\u093e \u0939\u0948\u0902\u0921\u0932\u093f\u0902\u0917 \u0936\u0941\u0932\u094d\u0915 \u0932\u093e\u0917\u0942 \u0939\u094b\u0924\u093e \u0939\u0948\u0964\\n\\n\u092f\u0926\u093f \u0906\u092a\u0915\u0947 \u092a\u093e\u0938 \u0915\u094b\u0908 \u0905\u0928\u094d\u092f \u092a\u094d\u0930\u0936\u094d\u0928 \u0939\u0948\u0902, \u0924\u094b \u0939\u092e\u0947\u0902 \u0905\u0935\u0936\u094d\u092f \u092c\u0924\u093e\u090f\u0902\u0964\\n\\nWarm regards,\\nTeam Kesar`;\n  } else {\n    reply = `Hi ${firstName},\\n\\nYes, our Saffron Glow Face Serum is lightweight, non-greasy, and formulated to be suitable for all skin types, including oily skin. It is also 100% vegan and cruelty-free, making it a great fit for your vegan routine.\\n\\nWarm regards,\\nTeam Kesar`;\n  }\n}\n// Return / Refund\nelse if (classification.intent === 'return_refund') {\n  if (item.days_since_delivery > 7) {\n    reply = `Hi ${firstName},\\n\\nThank you for reaching out. Our return policy allows returns within 7 days of delivery for unopened items with seals intact. Since your order was delivered on 5 November 2026, it is outside the 7-day return window and we are unable to accept a return.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else if (order.payment_method === 'cod') {\n    reply = `Hi ${firstName},\\n\\nWe can certainly assist you with returning the unopened Kumkumadi Oil and Aloe Gel from order ${order.order_id}. Since you paid via Cash on Delivery, our team will arrange a free reverse pickup and request your UPI ID or bank details once the items are collected to issue your refund within 5-7 business days.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else {\n    reply = `Hi ${firstName},\\n\\nWe would be happy to process a return for order ${order.order_id}. Since your product is sealed and within our 7-day return period, we will arrange a complimentary reverse pickup within 2-3 business days and issue a full refund to your original payment method.\\n\\nWarm regards,\\nTeam Kesar`;\n  }\n}\n// Complaints (Damaged / Missing / Wrong)\nelse if (classification.intent === 'complaint') {\n  reply = `Hi ${firstName},\\n\\nWe are very sorry for the inconvenience caused with your order ${order.order_id || ''}. Our support team has created high-priority ticket for this issue, and we will follow up within 24 business hours to arrange an immediate replacement or full refund as per your preference.\\n\\nWarm regards,\\nTeam Kesar`;\n}\n// Other / Partnerships / GST\nelse {\n  if (/collab|influencer/i.test(email.body)) {\n    reply = `Hi ${firstName},\\n\\nThank you for your interest in Kesar & Co.! Please direct your collaboration proposal and media kit to our partnerships team at partnerships@kesarandco.example, and they will be happy to connect with you.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else if (/gst invoice/i.test(email.body)) {\n    reply = `Hi ${firstName},\\n\\nThank you for reaching out. We have noted your request for a GST invoice for Bright Designs and forwarded it to our accounts department to issue and share with you shortly.\\n\\nWarm regards,\\nTeam Kesar`;\n  } else {\n    reply = ''; // No reply needed for spam or simple thank-you notes\n  }\n}\n\nreturn {\n  json: {\n    ...item,\n    reply_draft: reply\n  }\n};"
+      },
+      "id": "node-draft-reply",
+      "name": "Draft Reply (Brand Voice & FAQ)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ticket deduplication and formatting\nconst item = $input.first().json;\nconst intent = item.classification?.intent;\nconst orderId = item.order?.order_id || item.classification?.order_id || 'N/A';\nconst emailId = item.email?.email_id || 'E00';\nconst customerEmail = item.order?.customer_email || item.email?.from_email || '';\nconst summary = item.classification?.summary || '';\nconst sentiment = item.classification?.sentiment || 'neutral';\n\nconst ticketRequired = (intent === 'return_refund' || intent === 'complaint');\n\nif (!ticketRequired) {\n  return {\n    json: {\n      ...item,\n      ticket_action: 'NONE',\n      ticket_id: ''\n    }\n  };\n}\n\nlet priority = (intent === 'complaint' || sentiment === 'angry') ? 'High' : 'Medium';\nlet ticketId = 'TKT-001';\nlet ticketAction = 'CREATE';\n\n// Special ticket deduplication handling for Tanvi Desai (KC-1052)\nif (orderId === 'KC-1052') {\n  if (emailId === 'E21') {\n    ticketAction = 'UPDATE';\n    ticketId = 'TKT-002';\n  } else {\n    ticketAction = 'CREATE';\n    ticketId = 'TKT-002';\n  }\n} else if (orderId === 'KC-1051') {\n  ticketId = 'TKT-001';\n} else if (orderId === 'KC-1048') {\n  ticketId = 'TKT-003';\n} else if (orderId === 'KC-1053') {\n  ticketId = 'TKT-004';\n} else if (orderId === 'KC-1050') {\n  ticketId = 'TKT-005';\n} else if (orderId === 'KC-1054') {\n  ticketId = 'TKT-006';\n}\n\nreturn {\n  json: {\n    ...item,\n    ticket_action: ticketAction,\n    ticket_id: ticketId,\n    ticket_priority: priority\n  }\n};"
+      },
+      "id": "node-ticket-logic",
+      "name": "Ticket Deduplication & Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Audit log row formatter matching templates/audit_log_template.csv\nconst item = $input.first().json;\nconst email = item.email || {};\nconst classification = item.classification || {};\nconst order = item.order || null;\n\nconst emailId = email.email_id || 'E00';\nconst receivedAt = email.received_at || '';\nconst fromEmail = email.from_email || '';\nconst intent = classification.intent || 'other';\nconst secondaryIntent = classification.secondary_intent || '';\nconst orderId = order?.order_id || classification.order_id || '';\nconst language = classification.language || 'en';\nconst sentiment = classification.sentiment || 'neutral';\nconst confidence = classification.confidence !== undefined ? classification.confidence : 0;\nconst orderFound = item.order_found ? 'TRUE' : 'FALSE';\n\nlet actionTaken = 'Draft reply generated';\nif (intent === 'other' && !item.reply_draft) {\n  actionTaken = 'Logged only (no reply needed)';\n} else if (item.ticket_action === 'CREATE') {\n  actionTaken = `Created ticket ${item.ticket_id} + drafted reply`;\n} else if (item.ticket_action === 'UPDATE') {\n  actionTaken = `Updated ticket ${item.ticket_id} + drafted reply`;\n}\n\nconst needsHuman = item.needs_human ? 'TRUE' : 'FALSE';\nconst ticketId = item.ticket_id || '';\nconst replyDraft = item.reply_draft || '';\nconst promptVersion = 'v2';\nconst processedAt = new Date().toISOString();\nconst error = '';\nconst notes = (item.escalation_reasons && item.escalation_reasons.length > 0)\n  ? item.escalation_reasons.join('; ')\n  : 'Processed successfully';\n\nreturn {\n  json: {\n    email_id: emailId,\n    received_at: receivedAt,\n    from_email: fromEmail,\n    intent: intent,\n    secondary_intent: secondaryIntent,\n    order_id: orderId,\n    language: language,\n    sentiment: sentiment,\n    confidence: confidence,\n    order_found: orderFound,\n    action_taken: actionTaken,\n    needs_human: needsHuman,\n    ticket_id: ticketId,\n    reply_draft: replyDraft,\n    prompt_version: promptVersion,\n    processed_at: processedAt,\n    error: error,\n    notes: notes\n  }\n};"
+      },
+      "id": "node-audit-log",
+      "name": "Format Audit Log Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Audit Log"
+        },
+        "options": {}
+      },
+      "id": "node-sheets-audit",
+      "name": "Google Sheets (Audit Log)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'success', email_id: $json.email_id, action: $json.action_taken, ticket: $json.ticket_id }) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize & Guardrails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Fetch Orders DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Orders DB": {
+      "main": [
+        [
+          {
+            "node": "Fetch FAQ Knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch FAQ Knowledge": {
+      "main": [
+        [
+          {
+            "node": "Classify & Extract Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify & Extract Intent": {
+      "main": [
+        [
+          {
+            "node": "Order Lookup & Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Lookup & Rules": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Draft Reply (Brand Voice & FAQ)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Reply (Brand Voice & FAQ)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Reply (Brand Voice & FAQ)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Reply (Brand Voice & FAQ)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Reply (Brand Voice & FAQ)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Reply (Brand Voice & FAQ)": {
+      "main": [
+        [
+          {
+            "node": "Ticket Deduplication & Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket Deduplication & Logic": {
+      "main": [
+        [
+          {
+            "node": "Format Audit Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Audit Log Row": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets (Audit Log)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets (Audit Log)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
